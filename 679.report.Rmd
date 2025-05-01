@@ -1,0 +1,414 @@
+---
+title: "Dynamic Rhythms"
+author: "Yishun Zhang"
+date: "2025-04-30"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Introduction
+
+Extreme weather events—such as hurricanes, blizzards and derechos—pose a growing threat to electric‐power infrastructure and public safety. In this project, we develop a domain-driven forecasting framework that predicts the occurrence, lead time, severity and duration of power outages triggered by storms. Leveraging two primary data sources (historical storm event records and outage logs), we integrate additional publicly available information—e.g., ERA5 reanalysis fields, population density and grid topology—to capture both meteorological drivers and local vulnerability.
+
+Data and Method
+
+The data used in this study come from two publicly available sources: (1) a county-level power outage dataset covering 2014–2023, which records the number of customers affected and outage durations every 15 minutes (see the “Power Outages” dataset in the Starter notebook), and (2) a 2014–2024 subset of storm events from the NOAA Storm Events Database, detailing the timing, location, and intensity of extreme weather phenomena such as hurricanes, thunderstorms, tornadoes, and blizzards). By matching these two datasets in both time and space, we extract meteorological drivers of outages and develop a robust forecasting model.
+
+From 2014 to 2023, we first batch-loaded and combined the annual outage datasets, converting the character-based run_start_time to UTC POSIXct timestamps with fasttime::fastPOSIXct() and then binding them into a single dataset sorted by time. At the national level, we filtered records from November 1, 2014 to December 31, 2023, summed the 15-minute outage counts by state, and divided by 96 (the number of 15-minute intervals per day) to obtain a “customers·day” metric, which we mapped onto a U.S. state boundary layer for a clear visualization of relative outage severity.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+power14<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2014.csv")
+power15<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2015.csv")
+power16<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2016.csv")
+power17<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2017.csv")
+power18<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2018.csv")
+power19<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2019.csv")
+power20<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2020.csv")
+power21<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2021.csv")
+power22<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2022.csv")
+power23<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2023.csv")
+
+library(fasttime)
+
+dfs <- mget(paste0("power", 14:23))
+
+dfs2 <- lapply(dfs, function(df) {
+  df %>%
+    mutate(
+      run_start_time = as.character(run_start_time),
+      run_start_time = fasttime::fastPOSIXct(run_start_time, tz = "UTC")
+    )
+})
+
+df_all <- bind_rows(dfs2) %>%
+  arrange(run_start_time)
+
+library(ggplot2)
+library(maps)
+library(viridis)
+
+start_time <- as.POSIXct("2014-11-01 00:00:00", tz = "UTC")
+end_time   <- as.POSIXct("2023-12-31 23:45:00", tz = "UTC")
+
+agg <- df_all %>%
+  filter(run_start_time >= start_time,
+         run_start_time <= end_time) %>%
+  group_by(state) %>%
+  summarise(total_out = sum(customers_out, na.rm = TRUE)) %>%
+  mutate(customers_day = total_out / 96,   
+         region = tolower(state))         
+
+us_map <- map_data("state") %>%
+  mutate(region = tolower(region))
+
+map_df <- left_join(us_map, agg, by = "region")
+
+ggplot(map_df, aes(x = long, y = lat, group = group, fill = customers_day)) +
+  geom_polygon(color = "white", linewidth = 0.2) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(na.value = "grey90",
+                     name = "cust·day",
+                     option = "C") +
+  labs(title    = "U.S. Power Outages by State, Jan–Dec 2023 (customers·day)",
+       subtitle = paste(format(start_time, "%Y-%m-%d"),
+                        "to",
+                        format(end_time,   "%Y-%m-%d"))) +
+  theme_void() +
+  theme(legend.position = "right")
+```
+
+For state-level comparisons, we extracted Florida’s 2014–2023 data from dataset, normalized each record’s day-of-year to a common reference year to align calendar days across years, and plotted year-by-year outage curves.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+df_fla <- df_all %>%
+  filter(state == "Florida",
+         year(run_start_time) >= 2014,
+         year(run_start_time) <= 2023) %>%
+  mutate(
+    Year = factor(year(run_start_time)),       
+
+    date_norm = as.Date(yday(run_start_time) - 1,
+                        origin = "2020-01-01")  
+  )
+
+ggplot(df_fla, aes(x = date_norm,
+                   y = customers_out,
+                   color = Year,
+                   group = Year)) +
+  geom_line(alpha = 0.8) +
+  scale_x_date(date_breaks = "2 months",
+               date_labels = "%b") +
+  labs(
+    title = "Total Customers Out in Florida by Calendar Day (2014–2023)",
+    subtitle = "Each line shows one year's outages, aligned Jan–Dec",
+    x = NULL,
+    y = "Customers Out",
+    color = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 0, vjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+After batch-loading and combining the annual storm tables, we first extracted Florida’s daily customers·day outage metric. We then split each storm event by day and matched these against the continuous date sequence from November 1, 2014 to December 31, 2023, calculating overlap weights for each event–day pair to derive daily weighted counts and duration hours for each storm type. These wide-format storm features were inner-joined with the outage data by date to create dataset. Next, we extracted the year from each date, pivoted all storm-type columns to long format, and grouped by year and event type to sum total occurrences per storm type each year. Finally, we used ggplot2 to plot a grouped bar chart of annual storm counts in Florida from 2014–2023, clearly illustrating the year-to-year distribution of different storm types.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+storm14 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2014_c20231116.csv")
+storm15 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2015_c20240716.csv")
+storm16 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2016_c20220719.csv")
+storm17 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2017_c20230317.csv")
+storm18 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2018_c20240716.csv")
+storm19 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2019_c20240117.csv")
+storm20 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2020_c20240620.csv")
+storm21 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2021_c20240716.csv")
+storm22 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2022_c20241121.csv")
+storm23 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2023_c20241216.csv")
+dfs <- mget(paste0("storm", 14:23))
+
+df_storm_all <- bind_rows(dfs)
+
+df_fla_daily <- df_all %>% 
+  filter(state == "Florida") %>% 
+  mutate(date = as.Date(run_start_time))
+
+df_fla_daily_cd <- df_fla_daily %>% 
+  group_by(date) %>% 
+  summarise(
+    customers_day = sum(customers_out, na.rm = TRUE) / 96
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+library(data.table)
+library(dplyr)
+df_storm_all2 <- df_storm_all %>%
+  mutate(
+    begin_str = paste0(
+      substr(BEGIN_YEARMONTH, 1, 4), "-",         
+      substr(BEGIN_YEARMONTH, 5, 6), "-",           
+      sprintf("%02d", BEGIN_DAY), " ",        
+      sprintf("%04d", BEGIN_TIME)               
+    ),
+    end_str = paste0(
+      substr(END_YEARMONTH, 1, 4), "-",
+      substr(END_YEARMONTH, 5, 6), "-",
+      sprintf("%02d", END_DAY), " ",
+      sprintf("%04d", END_TIME)
+    ),
+    begin_dt = ymd_hm(begin_str, tz = "UTC"),
+    end_dt   = ymd_hm(end_str,   tz = "UTC")
+  ) %>%
+  mutate(
+    duration_mins  = as.numeric(difftime(end_dt, begin_dt, units = "mins")),
+    duration_hours = as.numeric(difftime(end_dt, begin_dt, units = "hours"))
+  )
+dt <- as.data.table(df_storm_all2)[
+  STATE == "FLORIDA",
+  .(begin_dt = as.POSIXct(begin_dt),
+    end_dt   = as.POSIXct(end_dt),
+    EVENT_TYPE)
+]
+
+day_seq <- seq(as.Date("2014-11-01"), as.Date("2023-12-31"), by = "day")
+dt_days <- data.table(
+  day       = day_seq,
+  day_start = as.POSIXct(day_seq),
+  day_end   = as.POSIXct(day_seq + 1)
+)
+
+setkey(dt,      begin_dt, end_dt)
+setkey(dt_days, day_start, day_end)
+
+ov <- foverlaps(
+  dt_days, dt,
+  by.x    = c("day_start","day_end"),
+  by.y    = c("begin_dt","end_dt"),
+  type    = "any",
+  nomatch = 0L
+)
+
+ov[, `:=`(
+  overlap_sec = as.numeric(pmin(end_dt, day_end) - pmax(begin_dt, day_start), units = "secs"),
+  event_sec   = as.numeric(end_dt - begin_dt, units = "secs")
+)]
+ov[, weight := overlap_sec / event_sec]
+
+daily_count <- ov[, .(count_prop = sum(weight)), by = .(day, EVENT_TYPE)]
+daily_dur   <- ov[, .(duration_hr = sum(overlap_sec) %/% 3600), by = .(day, EVENT_TYPE)]
+
+count_wide <- dcast(daily_count, day ~ EVENT_TYPE, value.var = "count_prop", fill = 0)
+setnames(count_wide,
+         old = setdiff(names(count_wide), "day"),
+         new = paste0("count_prop_", gsub(" ", "_", setdiff(names(count_wide), "day"))))
+
+dur_wide <- dcast(daily_dur, day ~ EVENT_TYPE, value.var = "duration_hr", fill = 0)
+setnames(dur_wide,
+         old = setdiff(names(dur_wide), "day"),
+         new = paste0("dur_hr_", gsub(" ", "_", setdiff(names(dur_wide), "day"))))
+
+final_df <- data.table(day = day_seq) %>%
+  merge(count_wide, by = "day", all.x = TRUE) %>%
+  merge(dur_wide,   by = "day", all.x = TRUE) %>%
+  (function(x){
+    num_cols <- setdiff(names(x), "day")
+    x[, (num_cols) := lapply(.SD, function(col) replace(col, is.na(col), 0)), .SDcols = num_cols]
+    x
+  })
+
+final_df <- as_tibble(final_df)
+df_fla_daily_cd_clean <- df_fla_daily_cd %>%
+  mutate(date = as.Date(date))    
+
+final_df_clean <- final_df %>%
+  rename(date = day) %>%          
+  mutate(date = as.Date(date))    
+
+merged_df <- df_fla_daily_cd_clean %>%
+  inner_join(final_df_clean, by = "date") %>%
+  arrange(date)
+```
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+storm_cols <- names(merged_df)[3:31]
+
+df_daily_storms <- merged_df %>%
+  mutate(
+    Year      = year(date),
+    MonthDay  = month(date),         
+    DayOfYear = yday(date)           
+  ) %>%
+  rowwise() %>%
+  mutate(
+    StormsTotal = sum(c_across(all_of(storm_cols)), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(df_daily_storms, 
+       aes(x = DayOfYear, y = StormsTotal, color = factor(Year), group = Year)) +
+  geom_line(alpha = 0.8) +
+  scale_x_continuous(
+    breaks = yday(as.Date(paste0("2020-", 1:12, "-15"))),  
+    labels = month.name
+  ) +
+  scale_color_viridis_d(option = "turbo", name = "Year") +
+  labs(
+    title    = "Total Storm Events by Calendar Day (2014–2023)",
+    subtitle = "Each line is one year, aligned Jan–Dec",
+    x        = NULL,
+    y        = "Total Storm Count"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "right",
+    panel.grid.minor  = element_blank(),
+    axis.text.x       = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+Over the one-month period from September 1 to October 1, 2017, I first extracted the daily data for that interval. I then plotted the daily counts of four event types—tropical storms, hurricanes, storm surge/tide, and floods—on a single chart, using distinct colors and line types. Next, I overlaid the daily power-outage intensity curve and added a secondary right-hand y-axis for its scale and label. For clarity, the x-axis features ticks every five days, and a legend in the top-left distinguishes each line. This visualization aligns the month’s storm-event frequencies with corresponding power-outage severity.From the plot, we can see that there is a lag between storm events and power outages.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+start <- as.Date("2017-09-01")
+end   <- as.Date("2017-10-01")
+
+win <- merged_df[merged_df$date >= start & merged_df$date <= end, ]
+
+storm_cols <- c("count_prop_Tropical_Storm", "count_prop_Hurricane", "count_prop_Storm_Surge/Tide", "count_prop_Flood")
+
+storm_cols_col <- c("dodgerblue", "orange", "forestgreen", "purple")
+storm_cols_lty <- c(1, 2, 3, 4)
+
+plot(win$date, win[[storm_cols[1]]],
+     type  = "n",
+     ylim  = c(0, max(win[, storm_cols], na.rm = TRUE)),
+     xlab  = "Date",
+     ylab  = "Event Counts",
+     xaxt  = "n")   
+
+axis.Date(1, at = seq(start, end, by = "5 days"), format = "%m-%d")
+
+for (i in seq_along(storm_cols)) {
+  lines(win$date, win[[storm_cols[i]]],
+        col  = storm_cols_col[i],
+        lty  = storm_cols_lty[i],
+        lwd  = 2)
+}
+
+par(new = TRUE) 
+plot(win$date, win$customers_day,
+     type  = "l",
+     col   = "red",
+     lwd   = 2,
+     axes  = FALSE,
+     xlab  = "",
+     ylab  = "",
+     ylim  = c(0, max(win$customers_day, na.rm = TRUE)))
+
+axis(side = 4)
+mtext("Customers·day", side = 4, line = 3, col = "red")
+
+legend("topleft",
+       legend = c(storm_cols, "Customers·day"),
+       col    = c(storm_cols_col, "red"),
+       lty    = c(storm_cols_lty, 1),
+       lwd    = 2,
+       bg     = "white",
+       inset  = 0.02,
+       cex    = 0.8)
+
+title("Time Histories of Event Counts and Power Outages\nFlorida 2017-09-01 to 2017-10-01")
+
+```
+
+We aggregate daily storm counts and durations into two time series and then create eight lagged features (lags 0 through 7) for each series, dropping the first seven rows rendered invalid by lagging. Next, we split the remaining data chronologically into a training set (all but the final year) and a test set (the last year). On the training set, we fit a generalized additive model that uses smooth functions of each lagged storm-count and duration feature to capture their nonlinear effects on daily outage intensity. After fitting, we generate predictions on the test set—clamping any negative forecasts to zero—compute the mean absolute error (MAE) and root mean squared error (RMSE) for evaluation, and finally plot the predicted versus actual outage curves over time for visual comparison.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(forecast)  
+   
+df_model <- merged_df %>%
+  arrange(date) %>%                      
+  mutate(
+    storm_count  = rowSums(across(starts_with("count_prop_"))),
+    storm_dur_hr = rowSums(across(starts_with("dur_hr_")))
+  ) %>%
+  mutate(across(
+    .cols = c(storm_count, storm_dur_hr),
+    .fns  = list(
+      lag0 = ~ lag(., 0),
+      lag1 = ~ lag(., 1),
+      lag2 = ~ lag(., 2),
+      lag3 = ~ lag(., 3),
+      lag4 = ~ lag(., 4),
+      lag5 = ~ lag(., 5),
+      lag6 = ~ lag(., 6),
+      lag7 = ~ lag(., 7)
+    ),
+    .names = "{.col}_{.fn}"
+  )) %>%
+  filter(!is.na(storm_count_lag7), !is.na(storm_dur_hr_lag7))
+
+h <- 365
+n <- nrow(df_model)
+train_df <- slice(df_model,        1:(n - h))
+test_df  <- slice(df_model, (n - h + 1):n)
+lag_count_cols <- paste0("storm_count_lag", 0:7)
+lag_dur_cols   <- paste0("storm_dur_hr_lag", 0:7)
+fml <- as.formula(
+  paste("customers_day ~", paste(c(lag_count_cols, lag_dur_cols), collapse = " + "))
+)
+library(mgcv)
+
+f_gam <- as.formula(
+  paste("customers_day ~",
+        paste0("s(storm_count_lag", 0:7, ")", collapse = " + "),
+        "+",
+        paste0("s(storm_dur_hr_lag", 0:7, ")", collapse = " + "))
+)
+
+gam_mod <- gam(f_gam, data = train_df, family = gaussian())
+test_df <- test_df %>%
+  mutate(
+    pred_raw  = predict(gam_mod, newdata = .),
+    predicted = pmax(0, pred_raw)          
+  )
+
+MAE  <- mean(abs(test_df$predicted - test_df$customers_day))
+RMSE <- sqrt(mean((test_df$predicted - test_df$customers_day)^2))
+cat("Test MAE =", MAE, "\nTest RMSE =", RMSE, "\n")
+
+ggplot(test_df, aes(x = date)) +
+  geom_line(aes(y = customers_day, color = "Actual")) +
+  geom_line(aes(y = predicted,     color = "Predicted")) +
+  labs(title = "GAM: Test Set Predicted vs Actual",
+       x = NULL, y = "Affected Customers") +
+  scale_color_manual("", values = c("Actual"="black","Predicted"="blue")) +
+  theme_minimal()
+
+```
+
+Results
+
+Across the first six lagged days, the weather shock indicators exert highly significant nonlinear effects on daily outage counts, with each smooth term achieving near-maximum flexibility—evidence that the response functions are far from simple straight lines. By the seventh day, these effects have essentially dissipated and are no longer statistically significant. The model achieves an adjusted R² of approximately 0.96 and explains 96.6% of the deviance, indicating that it captures the vast majority of daily variability. In out-of-sample testing, the model successfully flags major outage peaks within the correct time windows, but it tends to overestimate extremely large events and fails to maintain strictly zero forecasts on true zero-outage days. Although both mean absolute error and root-mean-square error improve over a linear benchmark, substantial error remains during peak periods.
+
+Discussion
+
+These findings demonstrate a clear threshold effect: only when storm intensity crosses a high level does it trigger significant outages, with the impact peaking around two days later and then decaying over the following week. While the generalized additive framework’s flexible smooth terms deliver greatly enhanced fit, it also over-amplifies extreme peaks and lacks a mechanism for strict zero predictions. To improve practical forecasting accuracy and robustness, one could impose peak truncation or quantile regression for extreme segments, incorporate a zero-inflation component for no-outage periods, and include additional operational and load variables to reduce reliance on a single weather metric. Finally, rolling-window validation should be employed to assess model generalizability across different storm cycles.
+

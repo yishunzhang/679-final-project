@@ -1,0 +1,698 @@
+---
+title: "Dynamic Rhythms"
+author: "Yishun Zhang"
+date: "2025-04-21"
+output: html_document
+---
+Number of people affected by power outages from 2014 to 2023
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+power14<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2014.csv")
+power15<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2015.csv")
+power16<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2016.csv")
+power17<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2017.csv")
+power18<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2018.csv")
+power19<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2019.csv")
+power20<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2020.csv")
+power21<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2021.csv")
+power22<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2022.csv")
+power23<- read.csv("C:/Users/17756/Downloads/eaglei_outages_2023.csv")
+
+```
+
+Integrate the data from 2014 to 2023
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(fasttime)
+
+dfs <- mget(paste0("power", 14:23))
+
+dfs2 <- lapply(dfs, function(df) {
+  df %>%
+    mutate(
+      run_start_time = as.character(run_start_time),
+      run_start_time = fasttime::fastPOSIXct(run_start_time, tz = "UTC")
+    )
+})
+
+df_all <- bind_rows(dfs2) %>%
+  arrange(run_start_time)
+
+head(df_all)
+
+```
+
+Identify the state with the most power outages in the past decade
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(maps)
+library(viridis)
+
+start_time <- as.POSIXct("2014-11-01 00:00:00", tz = "UTC")
+end_time   <- as.POSIXct("2023-12-31 23:45:00", tz = "UTC")
+
+agg <- df_all %>%
+  filter(run_start_time >= start_time,
+         run_start_time <= end_time) %>%
+  group_by(state) %>%
+  summarise(total_out = sum(customers_out, na.rm = TRUE)) %>%
+  mutate(customers_day = total_out / 96,   
+         region = tolower(state))         
+
+us_map <- map_data("state") %>%
+  mutate(region = tolower(region))
+
+map_df <- left_join(us_map, agg, by = "region")
+
+ggplot(map_df, aes(x = long, y = lat, group = group, fill = customers_day)) +
+  geom_polygon(color = "white", linewidth = 0.2) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(na.value = "grey90",
+                     name = "cust·day",
+                     option = "C") +
+  labs(title    = "U.S. Power Outages by State, Jan–Dec 2023 (customers·day)",
+       subtitle = paste(format(start_time, "%Y-%m-%d"),
+                        "to",
+                        format(end_time,   "%Y-%m-%d"))) +
+  theme_void() +
+  theme(legend.position = "right")
+
+```
+
+Plot the number of power outages in Florida over the past decade on the chart.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+df_fla <- df_all %>%
+  filter(state == "Florida",
+         year(run_start_time) >= 2014,
+         year(run_start_time) <= 2023) %>%
+  mutate(
+    Year = factor(year(run_start_time)),       
+
+    date_norm = as.Date(yday(run_start_time) - 1,
+                        origin = "2020-01-01")  
+  )
+Sys.setlocale("LC_TIME", "C")
+ggplot(df_fla, aes(x = date_norm,
+                   y = customers_out,
+                   color = Year,
+                   group = Year)) +
+  geom_line(alpha = 0.8) +
+  scale_x_date(date_breaks = "2 months",
+               date_labels = "%b") +
+  labs(
+    title = "Total Customers Out in Florida by Calendar Day (2014–2023)",
+    subtitle = "Each line shows one year's outages, aligned Jan–Dec",
+    x = NULL,
+    y = "Customers Out",
+    color = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 0, vjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+The number of power outages in these four states over the past decade
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_yearly <- df_all %>%
+  filter(state %in% c("Florida","California","Texas","Michigan")) %>%  
+  mutate(Year = year(run_start_time)) %>%                            
+  filter(Year >= 2014, Year <= 2023) %>%                             
+  group_by(state, Year) %>%
+  summarise(
+    customers_day = sum(customers_out, na.rm = TRUE) / 96             
+  ) %>%
+  ungroup()
+
+ggplot(df_yearly, aes(x = Year, y = customers_day, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2014:2023) +
+  labs(
+    
+    title = "Annual Power Outages (Customers·Day) in Four States (2014–2023)",
+    x     = "Year",
+    y     = "Customers·day",
+    color = "State"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+Storm data from 2014 to 2023
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+storm14 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2014_c20231116.csv")
+storm15 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2015_c20240716.csv")
+storm16 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2016_c20220719.csv")
+storm17 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2017_c20230317.csv")
+storm18 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2018_c20240716.csv")
+storm19 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2019_c20240117.csv")
+storm20 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2020_c20240620.csv")
+storm21 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2021_c20240716.csv")
+storm22 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2022_c20241121.csv")
+storm23 <- read.csv("C:/Users/17756/Downloads/StormEvents_details-ftp_v1.0_d2023_c20241216.csv")
+```
+
+Consolidate the storm data from the past decade
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+dfs <- mget(paste0("storm", 14:23))
+
+df_storm_all <- bind_rows(dfs)
+
+df_storm_all
+
+```
+
+
+Type of storm
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+unique(df_storm_all$EVENT_TYPE)
+```
+
+
+The number of types of storms in Florida over the past decade
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_fla_counts <- df_storm_all %>%
+  filter(STATE == "FLORIDA") %>%
+  count(EVENT_TYPE, name = "n") %>%
+  arrange(n)
+
+ggplot(df_fla_counts, aes(x = reorder(EVENT_TYPE, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Number of Storms by Type in Florida",
+    x     = "Storm Type",
+    y     = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+The number of the first six types of storms over ten years, by month.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+storm_types <- c("Thunderstorm Wind", "Heavy Rain", "Flood", 
+                 "Flash Flood", "Hail", "Tropical Storm")
+
+df_fla_monthly <- df_storm_all %>%
+  filter(STATE == "FLORIDA",
+         EVENT_TYPE %in% storm_types) %>%
+  count(EVENT_TYPE, MONTH_NAME, name = "n") %>%
+  mutate(month = factor(MONTH_NAME, levels = month.name)) %>%
+  arrange(EVENT_TYPE, month)
+
+ggplot(df_fla_monthly, aes(x = month, y = n)) +
+  geom_col(fill = "steelblue") +
+  facet_wrap(~ EVENT_TYPE, ncol = 3, scales = "free_y") +
+  scale_x_discrete(drop = FALSE) +    
+  labs(
+    title = "Monthly Counts of Six Storm Types in Florida (2014–2023)",
+    x     = "Month",
+    y     = "Number of Events"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text  = element_text(face = "bold")
+  )
+
+```
+
+
+The duration of each storm.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_storm_all2 <- df_storm_all %>%
+  mutate(
+    begin_str = paste0(
+      substr(BEGIN_YEARMONTH, 1, 4), "-",         
+      substr(BEGIN_YEARMONTH, 5, 6), "-",           
+      sprintf("%02d", BEGIN_DAY), " ",        
+      sprintf("%04d", BEGIN_TIME)               
+    ),
+    end_str = paste0(
+      substr(END_YEARMONTH, 1, 4), "-",
+      substr(END_YEARMONTH, 5, 6), "-",
+      sprintf("%02d", END_DAY), " ",
+      sprintf("%04d", END_TIME)
+    ),
+    begin_dt = ymd_hm(begin_str, tz = "UTC"),
+    end_dt   = ymd_hm(end_str,   tz = "UTC")
+  ) %>%
+  mutate(
+    duration_mins  = as.numeric(difftime(end_dt, begin_dt, units = "mins")),
+    duration_hours = as.numeric(difftime(end_dt, begin_dt, units = "hours"))
+  )
+
+
+head(df_storm_all2 )
+
+```
+
+
+Frequency of storms of various durations.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df_storm_all2, aes(x = duration_hours)) +
+  geom_histogram(breaks = seq(0, 100, by = 5),
+                 closed = "right",
+                 fill   = "skyblue",
+                 color  = "grey30",
+                 alpha  = 0.8) +
+  coord_cartesian(xlim = c(0, 100)) +
+  labs(
+    title = "Distribution of Event Durations (2014–2024)",
+    x     = "Duration (Hours)",
+    y     = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "grey90")
+  )
+
+
+```
+
+
+The number of storms of each duration.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df_storm_all2, aes(x = EVENT_TYPE, y = duration_hours)) +
+  geom_boxplot(outlier.shape = 21,
+               outlier.size  = 1,
+               fill           = "lightpink",
+               color          = "grey40",
+               alpha          = 0.7) +
+  coord_flip() +  
+  labs(
+    title = "Event Durations by Event Type",
+    x     = NULL,
+    y     = "Duration (Hours)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 0),
+    axis.text.y = element_text(size  = 7),
+    panel.grid.major.y = element_blank()
+  )
+
+```
+
+
+Frequency of storms of various durations.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_fla_daily <- df_all %>% 
+  filter(state == "Florida") %>% 
+  mutate(date = as.Date(run_start_time))
+
+df_fla_daily_cd <- df_fla_daily %>% 
+  group_by(date) %>% 
+  summarise(
+    customers_day = sum(customers_out, na.rm = TRUE) / 96
+  ) %>% 
+  ungroup()
+head(df_fla_daily_cd)
+
+```
+
+
+The number and duration of storms per day from 2014 to 2023.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(data.table)
+library(dplyr)
+
+
+dt <- as.data.table(df_storm_all2)[
+  STATE == "FLORIDA",
+  .(begin_dt = as.POSIXct(begin_dt),
+    end_dt   = as.POSIXct(end_dt),
+    EVENT_TYPE)
+]
+
+day_seq <- seq(as.Date("2014-11-01"), as.Date("2023-12-31"), by = "day")
+dt_days <- data.table(
+  day       = day_seq,
+  day_start = as.POSIXct(day_seq),
+  day_end   = as.POSIXct(day_seq + 1)
+)
+
+setkey(dt,      begin_dt, end_dt)
+setkey(dt_days, day_start, day_end)
+
+ov <- foverlaps(
+  dt_days, dt,
+  by.x    = c("day_start","day_end"),
+  by.y    = c("begin_dt","end_dt"),
+  type    = "any",
+  nomatch = 0L
+)
+
+ov[, `:=`(
+  overlap_sec = as.numeric(pmin(end_dt, day_end) - pmax(begin_dt, day_start), units = "secs"),
+  event_sec   = as.numeric(end_dt - begin_dt, units = "secs")
+)]
+ov[, weight := overlap_sec / event_sec]
+
+daily_count <- ov[, .(count_prop = sum(weight)), by = .(day, EVENT_TYPE)]
+daily_dur   <- ov[, .(duration_hr = sum(overlap_sec) %/% 3600), by = .(day, EVENT_TYPE)]
+
+count_wide <- dcast(daily_count, day ~ EVENT_TYPE, value.var = "count_prop", fill = 0)
+setnames(count_wide,
+         old = setdiff(names(count_wide), "day"),
+         new = paste0("count_prop_", gsub(" ", "_", setdiff(names(count_wide), "day"))))
+
+dur_wide <- dcast(daily_dur, day ~ EVENT_TYPE, value.var = "duration_hr", fill = 0)
+setnames(dur_wide,
+         old = setdiff(names(dur_wide), "day"),
+         new = paste0("dur_hr_", gsub(" ", "_", setdiff(names(dur_wide), "day"))))
+
+final_df <- data.table(day = day_seq) %>%
+  merge(count_wide, by = "day", all.x = TRUE) %>%
+  merge(dur_wide,   by = "day", all.x = TRUE) %>%
+  (function(x){
+    num_cols <- setdiff(names(x), "day")
+    x[, (num_cols) := lapply(.SD, function(col) replace(col, is.na(col), 0)), .SDcols = num_cols]
+    x
+  })
+
+final_df <- as_tibble(final_df)
+final_df
+
+
+
+```
+
+
+The number of outages and the number of storms are combined.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_fla_daily_cd_clean <- df_fla_daily_cd %>%
+  mutate(date = as.Date(date))    
+
+final_df_clean <- final_df %>%
+  rename(date = day) %>%          
+  mutate(date = as.Date(date))    
+
+merged_df <- df_fla_daily_cd_clean %>%
+  inner_join(final_df_clean, by = "date") %>%
+  arrange(date)
+
+merged_df
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+storm_cols <- names(merged_df)[3:31]
+
+df_daily_storms <- merged_df %>%
+  mutate(
+    Year      = year(date),
+    MonthDay  = month(date),         
+    DayOfYear = yday(date)           
+  ) %>%
+  rowwise() %>%
+  mutate(
+    StormsTotal = sum(c_across(all_of(storm_cols)), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(df_daily_storms, 
+       aes(x = DayOfYear, y = StormsTotal, color = factor(Year), group = Year)) +
+  geom_line(alpha = 0.8) +
+  scale_x_continuous(
+    breaks = yday(as.Date(paste0("2020-", 1:12, "-15"))),  
+    labels = month.name
+  ) +
+  scale_color_viridis_d(option = "turbo", name = "Year") +
+  labs(
+    title    = "Total Storm Events by Calendar Day (2014–2023)",
+    subtitle = "Each line is one year, aligned Jan–Dec",
+    x        = NULL,
+    y        = "Total Storm Count"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "right",
+    panel.grid.minor  = element_blank(),
+    axis.text.x       = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(forcats)
+library(ggplot2)
+
+first31 <- names(merged_df)[1:31]
+
+event_cols <- first31[
+  sapply(merged_df[first31], is.numeric) &
+  first31 != "customers_day"
+]
+
+good_cols <- event_cols[
+  sapply(merged_df[event_cols], function(x) sd(x, na.rm = TRUE) > 0)
+]
+
+corrs <- map_dbl(good_cols, 
+                 ~ cor(merged_df$customers_day, 
+                       merged_df[[.x]], 
+                       use = "pairwise.complete.obs"))
+
+corr_df <- tibble(
+  event       = good_cols,
+  correlation = corrs
+) %>%
+  filter(abs(correlation) > 0.1) %>%
+  arrange(correlation) %>%
+  mutate(event = fct_reorder(event, correlation))
+
+ggplot(corr_df, aes(x = event, y = correlation, fill = correlation)) +
+  geom_col() +
+  scale_fill_gradient2(
+    low      = "steelblue", 
+    mid      = "lightgray", 
+    high     = "indianred",
+    midpoint = 0
+  ) +
+  coord_flip() +
+  labs(
+    title    = "Correlation between First 31 Variables and Power Outages",
+    subtitle = "Only events with |correlation| > 0.1",
+    x        = "Variable",
+    y        = "Pearson Correlation\nwith customers_day",
+    fill     = "Corr"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+The delay was observed from September 1 to October 1, 2017.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+start <- as.Date("2017-09-01")
+end   <- as.Date("2017-10-01")
+
+win <- merged_df[merged_df$date >= start & merged_df$date <= end, ]
+
+storm_cols <- c("count_prop_Tropical_Storm", "count_prop_Hurricane", "count_prop_Storm_Surge/Tide", "count_prop_Flood")
+
+storm_cols_col <- c("dodgerblue", "orange", "forestgreen", "purple")
+storm_cols_lty <- c(1, 2, 3, 4)
+
+plot(win$date, win[[storm_cols[1]]],
+     type  = "n",
+     ylim  = c(0, max(win[, storm_cols], na.rm = TRUE)),
+     xlab  = "Date",
+     ylab  = "Event Counts",
+     xaxt  = "n")   
+
+axis.Date(1, at = seq(start, end, by = "5 days"), format = "%m-%d")
+
+for (i in seq_along(storm_cols)) {
+  lines(win$date, win[[storm_cols[i]]],
+        col  = storm_cols_col[i],
+        lty  = storm_cols_lty[i],
+        lwd  = 2)
+}
+
+par(new = TRUE) 
+plot(win$date, win$customers_day,
+     type  = "l",
+     col   = "red",
+     lwd   = 2,
+     axes  = FALSE,
+     xlab  = "",
+     ylab  = "",
+     ylim  = c(0, max(win$customers_day, na.rm = TRUE)))
+
+axis(side = 4)
+mtext("Customers·day", side = 4, line = 3, col = "red")
+
+legend("topleft",
+       legend = c(storm_cols, "Customers·day"),
+       col    = c(storm_cols_col, "red"),
+       lty    = c(storm_cols_lty, 1),
+       lwd    = 2,
+       bg     = "white",
+       inset  = 0.02,
+       cex    = 0.8)
+
+title("Time Histories of Event Counts and Power Outages\nFlorida 2017-09-01 to 2017-10-01")
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+
+event_cols <- c("count_prop_Tropical_Storm", "count_prop_Hurricane", "count_prop_Storm_Surge/Tide", "count_prop_Flood")
+max_lag    <- 15
+
+n <- nrow(merged_df)
+
+ccf_df <- expand_grid(
+  event = event_cols,
+  lag   = 0:max_lag
+) %>%
+  mutate(
+    corr = map2_dbl(event, lag, ~ {
+      x_full <- merged_df[[.x]]
+      y_full <- merged_df$customers_day
+      d <- .y
+      if (d == 0) {
+        cor(x_full, y_full, use = "pairwise.complete.obs")
+      } else {
+        x <- x_full[1:(n - d)]
+        y <- y_full[(d + 1):n]
+        cor(x, y, use = "pairwise.complete.obs")
+      }
+    })
+  )
+
+ggplot(ccf_df, aes(x = lag, y = corr, color = event)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  scale_x_continuous(breaks = seq(0, max_lag, by = 5)) +
+  labs(
+    title    = "Lagged Correlation: Storms Leading Power Outages",
+    subtitle = "Correlation at delay = 0…15 days",
+    x        = "Delay (days before outage)",
+    y        = "Pearson Correlation",
+    color    = "Event Type"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    axis.text.x     = element_text(angle = 0)
+  )
+
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+df_model <- merged_df %>%
+  arrange(date) %>%                      
+  mutate(
+    storm_count  = rowSums(across(starts_with("count_prop_"))),
+    storm_dur_hr = rowSums(across(starts_with("dur_hr_")))
+  ) %>%
+  mutate(across(
+    .cols = c(storm_count, storm_dur_hr),
+    .fns  = list(
+      lag0 = ~ lag(., 0),
+      lag1 = ~ lag(., 1),
+      lag2 = ~ lag(., 2),
+      lag3 = ~ lag(., 3),
+      lag4 = ~ lag(., 4),
+      lag5 = ~ lag(., 5),
+      lag6 = ~ lag(., 6),
+      lag7 = ~ lag(., 7)
+    ),
+    .names = "{.col}_{.fn}"
+  )) %>%
+  filter(!is.na(storm_count_lag7), !is.na(storm_dur_hr_lag7))
+
+h <- 365
+n <- nrow(df_model)
+train_df <- slice(df_model,        1:(n - h))
+test_df  <- slice(df_model, (n - h + 1):n)
+
+lag_count_cols <- paste0("storm_count_lag", 0:7)
+lag_dur_cols   <- paste0("storm_dur_hr_lag", 0:7)
+fml <- as.formula(
+  paste("customers_day ~", paste(c(lag_count_cols, lag_dur_cols), collapse = " + "))
+)
+
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(mgcv)
+
+f_gam <- as.formula(
+  paste("customers_day ~",
+        paste0("s(storm_count_lag", 0:7, ")", collapse = " + "),
+        "+",
+        paste0("s(storm_dur_hr_lag", 0:7, ")", collapse = " + "))
+)
+
+gam_mod <- gam(f_gam, data = train_df, family = gaussian())
+summary(gam_mod)
+plot(gam_mod, pages=2, rug=FALSE)
+
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+test_df <- test_df %>%
+  mutate(
+    pred_raw  = predict(gam_mod, newdata = .),
+    predicted = pmax(0, pred_raw)          
+  )
+
+MAE  <- mean(abs(test_df$predicted - test_df$customers_day))
+RMSE <- sqrt(mean((test_df$predicted - test_df$customers_day)^2))
+cat("Test MAE =", MAE, "\nTest RMSE =", RMSE, "\n")
+Sys.setlocale("LC_TIME", "C")
+ggplot(test_df, aes(x = date)) +
+  geom_line(aes(y = customers_day, color = "Actual")) +
+  geom_line(aes(y = predicted,     color = "Predicted")) +
+  labs(title = "GAM: Test Set Predicted vs Actual",
+       x = NULL, y = "Affected Customers") +
+  scale_color_manual("", values = c("Actual"="black","Predicted"="blue")) +
+  theme_minimal()
+
+```
